@@ -1,0 +1,13 @@
+Introduction===========Tweet Scheduler module allows publishing of tweets on the Twitter account of user 
+directly.User can schedule tweets for a particular Date and Time and can even tweet periodically (any presaved
+tweet from the database will be selected randomly and will be posted on the user connected Twitter account 
+after every predefined time). To enter the time intreval for periodic tweets, go to admin/user->Tweet
+ Scheduler->Time Interval. Each user can define their own Interval Time. Each user can connect several
+ Twitter account to their Drupal user account and can select to which account user want to post. Before 
+ installing this module, one need to install twitter module and must connect it with their fully functional 
+ twitter account.OAuth=====Except for just listing tweets, Oauth module is required to authenticate against
+ Twitter. When you download the OAuth module, get the latest stable release available at
+ http://drupal.org/project/oauth.Once OAuth has been enabled go to admin/config/services/twitter 
+ and follow instructions. How to add a Twitter Account to a Drupal user account=======================Read 
+ http://drupal.org/node/1253026 for details. How to Post to Twitter================1.After all the 
+ installation, go to, admin/node/tweet and follow the instructions for scheduling and periodic tweets.
