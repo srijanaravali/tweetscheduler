@@ -1,0 +1,292 @@
+<?php
+
+function tweet_scheduler_form($form, &$form_state) {
+  $form = array();
+
+  global $user;
+  module_load_include('inc', 'twitter');
+  $twitter_accounts = module_invoke('twitter', 'twitter_accounts', $user);
+  $options = array();
+  foreach ($twitter_accounts as $option) {
+    $options[$option->screen_name] = $option->screen_name;
+  }
+  
+  if (count($options) > 0) {
+    $form['tweet_text'] = array(
+      '#type' => 'textarea',
+      '#rows' => 2,
+      '#columns' => 40,
+      '#default_value' => '',
+      '#title' => t("What's happening?"),
+      
+    );
+    $form['tweet_scheduler_select'] = array(
+      '#type' => 'radios',
+      '#title' => 'Schedule options',
+      '#default_value' => '0',
+      '#options' => array(
+        '0' => t('Send this tweet to twitter immediately'),
+        '1' => t('Schedule this tweet'),
+        '2' => t('Periodic Tweets'),
+      ),
+      '#ajax' => array(
+        'callback' => 'tweet_scheduler_form_callback',
+        'event' => 'change',
+        'wrapper' => 'tweet_scheduler_replace_form',
+        'effect'=> 'fade',
+      ),
+    );
+    
+    $form_state['#tweet_scheduler_account'] = $user;
+    $form_state['#tweet_scheduler_options_count'] = count($options);
+    
+    $form['tweet_scheduler_ajax_form']['open'] = array(
+      '#markup' => '<div id="tweet_scheduler_replace_form">',
+    );
+    
+    if(isset($form_state['values']['tweet_scheduler_select']) &&  $form_state['values']['tweet_scheduler_select'] == '1') {
+      $form['tweet_scheduler_ajax_form']['date_time'] = array(
+        '#type' => 'date_popup',
+        '#date_format' => 'Y-m-d H:i:s',
+      );
+    }
+    
+    $form['tweet_scheduler_ajax_form']['tweet_scheduler_twitter_account'] = array(
+      '#type' => 'select',
+      '#title' => t('Choose an account to which tweets from Tweet Scheduler should be posted'),
+      '#description' => t('Tweets will be posted to the account by Tweet Scheduler automatically '),
+      '#options' => $options,
+    );
+    
+    $submit_text = t('Publish');
+    if(isset($form_state['values']['tweet_scheduler_select']) && $form_state['values']['tweet_scheduler_select'] == '1') {
+      $submit_text = t('Schedule'); 
+    }
+    else if(isset($form_state['values']['tweet_scheduler_select']) && $form_state['values']['tweet_scheduler_select'] == '2') {
+      $submit_text = t('Save'); 
+    }
+    
+    $form['tweet_scheduler_ajax_form']['tweet_submit'] = array(
+      '#type' => 'submit',
+      '#value' => $submit_text,
+    );
+    
+    $form['tweet_scheduler_ajax_form']['close'] = array(
+      '#markup' => '</div>',
+    );
+  }
+  else {
+    $form['twitter_account_setup'] = array(
+      '#markup' => t('No twitter account is available, set up a twitter account <a href="@add_twitter_account">here</a>.', array('@add_twitter_account' => url('user/1/edit/twitter'))),
+    );
+  }
+  
+  return $form;
+}
+function tweet_scheduler_form_callback($form, $form_state) {
+  return $form['tweet_scheduler_ajax_form'];
+}
+
+function tweet_scheduler_form_validate(&$form, &$form_state) {
+  $tweet_text = $form_state['values']['tweet_text'];
+  if (strlen($tweet_text) > 140) {
+    form_set_error('tweet_text', t('Tweet can not be more than 140 characters'));
+  }
+}
+
+function tweet_scheduler_form_submit(&$form, &$form_state) {
+  switch($form_state['values']['tweet_scheduler_select']['options']) {
+    case 0:
+      tweet_scheduler_post_to_twitter($form_state['values']['tweet_text'], $form_state['values']['tweet_scheduler_twitter_account']);
+      break;
+    case 1:
+      $scheduled = 1;
+      $scheduled_time = strtotime($form_state['values']['date_time']);
+      $user_name = $form_state['values']['tweet_scheduler_twitter_account'];
+      $post = $form_state['values']['tweet_text'];
+      global $user;
+      $nid = db_insert('tweet_scheduler')
+      ->fields(array(
+        'screen_name' => $user_name,
+        'text' => $post,
+        'scheduled_timestamp' => $scheduled_time,
+        'scheduled' => $scheduled,
+        'uid' => $user->uid,
+      ))
+      ->execute();
+      break;
+    case 2:
+      $scheduled = 2;
+      global $user;
+      $account = user_load($user->uid);
+      $interval_time = $account->data['tweet_scheduler_interval_time'];
+      $time = time() + $interval_time*60*60;
+      $query = db_select('tweet_scheduler', 'a')
+            ->fields('a', array('scheduled', 'scheduled_timestamp'))
+            ->condition('scheduled', '2', '=')
+            ->execute()
+            ->fetchAssoc();
+      $scheduled_time = ($query['scheduled_timestamp']) ? $query['scheduled_timestamp'] : $time;
+      $user_name = $form_state['values']['tweet_scheduler_twitter_account'];
+      $post = $form_state['values']['tweet_text'];
+      global $user;
+      $nid = db_insert('tweet_scheduler')
+      ->fields(array(
+        'screen_name' => $user_name,
+        'text' => $post,
+        'scheduled' => $scheduled,
+        'uid' => $user->uid,
+        'scheduled_timestamp' => $scheduled_time,
+      ))
+      ->execute();
+      break;
+  }
+
+function twitter_queue_livesend_submit($form, &$form_state) {
+  // Automatic sending via twitter OAuth.
+  if (!$form_state['values']['check']) {
+    module_load_include('inc', 'twitter_queue');
+    twitter_queue_send_live($form_state['values']['textarea']);
+  }
+
+  $fake_nid = db_select('twitter_queue', 'tq')
+  ->fields('tq', array('nid'))
+  ->condition('nid', 'f%', 'LIKE')
+  ->orderBy('tq.nid', 'DESC')
+  ->execute()
+  ->fetchField();
+
+  $fake_nid = preg_match('/f/', $fake_nid) ? 'f' . (preg_replace('/f/', '', $fake_nid) + 1) : 'f1';
+
+  $table = "twitter_queue";
+
+  $record = new stdClass();
+  $record->weight = -20;
+  $record->nid = $fake_nid;
+  $record->node_status = 1;
+  $record->text_status = $form_state['values']['textarea'];
+
+  drupal_write_record($table, $record);
+
+  drupal_set_message(t('tweet added to the sending queue.'));
+}
+
+/**
+ * View of the panel.
+ */
+function twitter_queue_list() {
+  $output = '';
+
+  $live_form = drupal_get_form('twitter_queue_livesend');
+  $output .= drupal_render($live_form);
+
+  $queue_overview = drupal_get_form('twitter_queue_overview');
+  $output .= drupal_render($queue_overview);
+
+  return $output;
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function twitter_queue_node_insert($node) {
+  module_load_include('inc', 'twitter_queue');
+  _twitter_queue_ins_upd($node);
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function twitter_queue_node_update($node) {
+  module_load_include('inc', 'twitter_queue');
+  _twitter_queue_ins_upd($node);
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function twitter_queue_form_alter(&$form, &$form_state, $form_id) {
+  $tq_status = array();
+  // Retrieve the content type settings.
+  $types = variable_get('twitter_queue_types', array());
+
+  // Get the machine name content type.
+  $type = preg_replace('@_node_form@', '', $form_id);
+
+  if (!empty($types[$type])) {
+    if ($form['nid']['#value'] > 0) {
+
+      $tq_status = db_select('twitter_queue_status', 'tq')
+      ->fields('tq', array('status'))
+      ->condition('nid', $form['nid']['#value'])
+      ->execute()
+      ->fetchAssoc();
+    }
+
+    if (empty($tq_status)) {
+      $tq_status['status'] = in_array('twitter_queue_' . $type . '_status', variable_get('node_options_' . $type, ''));
+    }
+
+    $form['options']['twitter_queue_' . $type . '_status'] = array(
+      '#type'          => 'checkbox',
+      '#title'         => t('Add Twitter Queue'),
+      '#default_value' => $tq_status['status'],
+    );
+  }
+
+  // Override the manage content type form. get the machine name content type.
+  if (!empty($form['#node_type']->type)) {
+    $type = $form['#node_type']->type;
+
+    // Edition the content type to preset the default action.
+    if (!empty($types[$type])) {
+      $form['workflow']['node_options']['#options'] = $form['workflow']['node_options']['#options'] + array('twitter_queue_' . $type . '_status' => 'Add Twitter Queue');
+    }
+  }
+}
+
+/**
+ * Implements hook_cron().
+ */
+function twitter_queue_cron() {
+  module_load_include('inc', 'twitter_queue');
+  $lastrun = variable_get('twitter_queue_lastrun', mktime(0, 0, 0, 1, 1, 1900));
+  $timer   = variable_get('twitter_queue_schedule', 10);
+  $report  = FALSE;
+
+  $result = db_select('twitter_queue', 'tq')
+  ->fields('tq', array('nid'))
+  ->condition('node_status', 1)
+  ->orderBy('weight', 'ASC')
+  ->execute()
+  ->fetchField();
+
+  // Next tweet to send as the last run.
+  $next_run = $lastrun + ($timer * 60);
+  $now = time() + 60;
+
+  // Time is added to 60 seconds more to avoid problems with inaccurate minutes.
+  if ($result && date('YmdHi', $now) >= date('YmdHi', $next_run)) {
+    $report = twitter_queue_send($result, FALSE);
+  }
+
+  if ($report) {
+    // Updating the time when the tweet was sent.
+    variable_set('twitter_queue_lastrun', time());
+
+    watchdog('twitter_queue', 'Cron executed: ' . PHP_EOL . 'hour: @date', array('@date' => date('d/m/Y G:i:s')));
+  }
+}
+
+/**
+ * Implements elysia's hook_cronapi().
+ */
+function twitter_queue_cronapi($op, $job = NULL) {
+  switch ($op) {
+    case 'list':
+      return array('twitter_queue_cron' => 'Standard cron process');
+
+    case 'rule':
+      return '*/' . variable_get('twitter_queue_schedule', 10) . ' * * * *';
+  }
+}
