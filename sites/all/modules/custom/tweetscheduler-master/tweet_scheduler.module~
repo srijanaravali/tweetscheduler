@@ -143,6 +143,6 @@ function tweet_scheduler_cron() {
 
 function tweet_scheduler_form_alter($form, &$form_state, $form_id) {
   if ($form_id == 'twitter_account_list_form') {
-   // print '<pre>'; print_r($form); die('123');
+    print '<pre>'; print_r($form); die('123');
   }
 }
