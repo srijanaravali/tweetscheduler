@@ -1,11 +1,11 @@
 <?php
-
 /**
  * @file
  * Twitter API functions
  */
 
 module_load_include('php', 'oauth_common', 'lib/OAuth');
+require_once('twitter.lib.php');
 
 /**
  * Connect to the Twitter API.
@@ -19,12 +19,12 @@ module_load_include('php', 'oauth_common', 'lib/OAuth');
 function twitter_connect($account = NULL) {
   if (!$account) {
     // Load the first authenticated account.
-    $twitter_uid = db_query("SELECT twitter_uid
-                             FROM {twitter_account}
-                             WHERE oauth_token <> ''
-                               AND oauth_token_secret <> '' ")->fetchField();
-    $account = twitter_account_load($twitter_uid);
+    $accounts = twitter_load_authenticated_accounts();
+    if (count($accounts)) {
+      $account = reset($accounts);
+    }
   }
+
   if ($account) {
     $auth = $account->get_auth();
     if (isset($auth['oauth_token']) && isset($auth['oauth_token_secret'])) {
@@ -36,89 +36,61 @@ function twitter_connect($account = NULL) {
 }
 
 /**
- * Saves a TwitterUser object to {twitter_account}
+ * Loads a Twitter account by its screen_name.
+ *
+ * @param string $screen_name
+ *   A Twitter account name.
+ * @return
+ *   A TwitterAccount object or FALSE.
  */
-function twitter_account_save($twitter_user, $save_auth = FALSE) {
-  $values = (array) $twitter_user;
-  $values['twitter_uid'] = $values['id'];
-  foreach (array('protected', 'verified', 'profile_background_tile') as $k) {
-    if (isset($values[$k])) {
-      $values[$k] = (int) $values[$k];
-    }
-  }
+function twitter_account_load($screen_name) {
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'twitter_account')
+    ->propertyCondition('screen_name', $screen_name);
+  $result = $query->execute();
 
-  if ($save_auth) {
-    $values += $twitter_user->get_auth();
+  $ids = !empty($result['twitter_account']) ? array_keys($result['twitter_account']) : array();
+  if (count($ids)) {
+    return entity_load_single('twitter_account', array_pop($ids));
   }
-  $schema = drupal_get_schema('twitter_account');
-  foreach ($values as $k => $v) {
-    if (!isset($schema['fields'][$k])) {
-      unset($values[$k]);
-    }
+  else {
+    return FALSE;
   }
-  db_merge('twitter_account')
-    ->key(array('twitter_uid' => $values['twitter_uid']))
-    ->fields($values)
-    ->execute();
-
-  // Notify other modules of the twitter account save
-  module_invoke_all('twitter_account_save', $values);
 }
 
 /**
- * Load a Twitter account from {twitter_account}.
+ * Loads all Twitter accounts added by a Drupal user.
  *
- * @param mixed $id
- *   int Twitter User id or string Twitter user screen name.
+ * This excludes Twitter accounts added automatically when,
+ * for example, pulling mentions of an account from the Twitter API.
  *
  * @return
- *   TwitterUser object or NULL.
+ *   array of TwitterAccount objects.
  */
-function twitter_account_load($id) {
-  $values = db_query('SELECT *
-                      FROM {twitter_account}
-                      WHERE twitter_uid = :id_1
-                      OR screen_name  = :id_2',
-                      array(':id_1' => $id, ':id_2' => $id))
-              ->fetchAssoc();
-  if (!empty($values)) {
-    $values['id'] = $values['twitter_uid'];
-    $account = new TwitterUser($values);
-    $account->set_auth($values);
-    $account->import = $values['import'];
-    $account->mentions = $values['mentions'];
-    $account->is_global = $values['is_global'];
-    return $account;
-  }
-  return NULL;
-}
+function twitter_load_accounts() {
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'twitter_account')
+    ->propertyCondition('uid', 0, '<>')
+    ->propertyOrderBy('screen_name');
+  $result = $query->execute();
 
-/**
- * Loads all Twitter accounts added by a user.
- *
- * @return
- *   array of TwitterUser objects.
- */
-function twitter_account_load_all() {
-  $accounts = array();
-  $result = db_query('SELECT twitter_uid
-                      FROM {twitter_account}
-                      WHERE uid <> 0
-                      ORDER BY screen_name');
-  foreach ($result as $account) {
-    $accounts[] = twitter_account_load($account->twitter_uid);
+  $ids = !empty($result['twitter_account']) ? array_keys($result['twitter_account']) : array();
+  if (count($ids)) {
+    return entity_load('twitter_account', $ids);
   }
-  return $accounts;
+  else {
+    return array();
+  }
 }
 
 /**
  * Returns a list of authenticated Twitter accounts.
  *
  * @return
- *   array of TwitterUser objects.
+ *   array of TwitterAccount objects.
  */
 function twitter_load_authenticated_accounts() {
-  $accounts = twitter_account_load_all();
+  $accounts = twitter_load_accounts();
   $auth_accounts = array();
   foreach ($accounts as $index => $account) {
     if ($account->is_auth()) {
@@ -129,40 +101,21 @@ function twitter_load_authenticated_accounts() {
 }
 
 /**
- * Load a Twitter status.
- *
- * @param $status_id
- *   The status id of this tweet.
- *
- * @return
- *   An instance of stdClass object with the Tweet data or FALSE.
- */
-function twitter_status_load($status_id) {
-  return db_query("SELECT * FROM {twitter} WHERE twitter_id = :status_id",
-           array(':status_id' => $status_id))->fetchObject();
-}
-
-/**
  * Saves a TwitterStatus object to {twitter}
  */
 function twitter_status_save($status) {
-  $row = array(
-    'twitter_id' => $status->id,
-    'screen_name' => $status->user->screen_name,
-    'created_time' => strtotime($status->created_at),
-    'text' => $status->text,
-    'source' => $status->source,
-    'in_reply_to_status_id' => ($status->in_reply_to_status_id > 0) ? (string) $status->in_reply_to_status_id : NULL,
-    'in_reply_to_user_id' => (int) $status->in_reply_to_user_id,
-    'in_reply_to_screen_name' => $status->in_reply_to_screen_name,
-    'truncated' => (int) $status->truncated,
-  );
-  db_merge('twitter')
-    ->key(array('twitter_id' => $row['twitter_id']))
-    ->fields($row)
-    ->execute();
-  // Let other modules know that a status has been saved.
-  module_invoke_all('twitter_status_save', $status);
+  $twitter_status = new TwitterStatus();
+  $twitter_status->twitter_id = $status->id;
+  $twitter_status->screen_name = $status->user->screen_name;
+  $twitter_status->created_time = strtotime($status->created_at);
+  $twitter_status->text = $status->text;
+  $twitter_status->source = $status->source;
+  $twitter_status->in_reply_to_status_id = ($status->in_reply_to_status_id > 0) ? (string) $status->in_reply_to_status_id : NULL;
+  $twitter_status->in_reply_to_user_id = (int) $status->in_reply_to_user_id;
+  $twitter_status->in_reply_to_screen_name = $status->in_reply_to_screen_name;
+  $twitter_status->truncated = (int) $status->truncated;
+  $twitter_status->is_new = entity_load_single('twitter_status', $twitter_status->twitter_id) ? FALSE : TRUE;
+  entity_save('twitter_status', $twitter_status);
 }
 
 /**
@@ -184,7 +137,7 @@ function twitter_set_status($twitter_account, $status) {
  * Fetches a user's timeline.
  */
 function twitter_fetch_user_timeline($id) {
-  $account = twitter_account_load($id);
+  $account = entity_load_single('twitter_account', $id);
   $since = db_query("SELECT MAX(twitter_id) FROM {twitter} WHERE screen_name = :screen_name", array(':screen_name' => $account->screen_name))->fetchField();
 
   // Connect to the Twitter's API.
@@ -199,9 +152,8 @@ function twitter_fetch_user_timeline($id) {
   foreach ($statuses as $status) {
     twitter_status_save($status);
   }
-
+  // Update Twitter account data.
   if (count($statuses) > 0) {
-    // Update account details.
     twitter_account_save($statuses[0]->user);
   }
 }
@@ -210,17 +162,15 @@ function twitter_fetch_user_timeline($id) {
  * Fetches user's mentions of an authenticated account.
  */
 function twitter_fetch_mentions_timeline($id) {
-  $account = twitter_account_load($id);
+  $account = entity_load_single('twitter_account', $id);
   // Connect to Twitter's API using the authenticated account to fetch mentions.
   $twitter = twitter_connect($account);
 
   $params = array();
   $statuses = $twitter->mentions_timeline($params);
-  foreach ($statuses as $status) {
-    if (!twitter_account_load($status->user->id)) {
-      twitter_account_save($status->user);
-    }
-    twitter_status_save($status);
+  foreach ($statuses as $twitter_status) {
+    twitter_account_save($twitter_status->user);
+    twitter_status_save($twitter_status);
   }
 }
 
@@ -231,18 +181,32 @@ function twitter_fetch_mentions_timeline($id) {
  *   Optionally provide a screen_name to filter.
  */
 function twitter_tweets($screen_name = NULL) {
-  $query = db_select('twitter', 't')
-    ->fields('t');
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'twitter_status');
   if (isset($screen_name)) {
-    $query->condition('t.screen_name', $screen_name);
+    $query->entityCondition('screen_name', $screen_name);
   }
   $result = $query->execute();
+  $ids = !empty($result['twitter_status']) ? array_keys($result['twitter_status']) : array();
+  $twitter_statuses = entity_load('twitter_status', $ids);
 
-  $tweets = array();
-  foreach ($result as $row) {
-    $tweets[] = $row;
+  return $twitter_statuses;
+}
+
+/**
+ * Saves a twitter account.
+ *
+ * @param object $twitter_account
+ *   A TwitterAccount instance.
+ */
+function twitter_account_save($twitter_account) {
+  $twitter_account_db = entity_load_single('twitter_account', $twitter_account->twitter_uid);
+  // Check whether this account exists and load its defaults prior to save.
+  $twitter_account->is_new = $twitter_account_db ? FALSE : TRUE;
+  if ($twitter_account_db) {
+    $twitter_account = (object) array_merge((array) $twitter_account_db, (array) $twitter_account);
   }
-  return $tweets;
+  entity_save('twitter_account', $twitter_account);
 }
 
 /**
@@ -252,17 +216,14 @@ function twitter_tweets($screen_name = NULL) {
  *   An integer with the Twitter UID.
  */
 function twitter_account_delete($twitter_uid) {
-  $account = twitter_account_load($twitter_uid);
+  $account = entity_load_single('twitter_account', $twitter_uid);
 
   // Delete from {twitter_account}.
-  $query = db_delete('twitter_account');
-  $query->condition('twitter_uid', $twitter_uid);
-  $query->execute();
+  entity_delete('twitter_account', $twitter_uid);
 
   // Delete from {twitter}.
-  $query = db_delete('twitter');
-  $query->condition('screen_name', $account->screen_name);
-  $query->execute();
+  $twitter_statuses = twitter_tweets($account->screen_name);
+  entity_delete_multiple('twitter_status', array_keys($twitter_statuses));
 
   // Delete from {authmap}.
   $query = db_delete('authmap');
