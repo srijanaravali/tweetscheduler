@@ -7687,6 +7687,7 @@ function entity_get_info($entity_type = NULL) {
       drupal_alter('entity_info', $entity_info);
       cache_set("entity_info:$langcode", $entity_info);
     }
+    
   }
 
   if (empty($entity_type)) {
